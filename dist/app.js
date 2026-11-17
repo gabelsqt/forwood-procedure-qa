@@ -8,6 +8,7 @@ const make = (tag, value) => {
 };
 const defaults = {
   questionWordCue: 16,
+  disabledTags: [],
   replacements: { "prior to": "before", "in order to": "to" },
   flagPhrases: ["as required", "where required", "if applicable", "as needed", "properly", "adequate", "safe"]
 };
@@ -59,7 +60,7 @@ byId("file").onchange = async event => {
 
 function settings() {
   const rules = JSON.parse(byId("rules").value);
-  if (!rules || !Number.isInteger(rules.questionWordCue) || rules.questionWordCue < 1 ||
+  if (!rules || (rules.disabledTags !== undefined && (!Array.isArray(rules.disabledTags) || rules.disabledTags.some(id => typeof id !== "string"))) || !Number.isInteger(rules.questionWordCue) || rules.questionWordCue < 1 ||
       !Array.isArray(rules.flagPhrases) || rules.flagPhrases.some(phrase => typeof phrase !== "string" || !phrase.trim()) ||
       !rules.replacements || Array.isArray(rules.replacements) || typeof rules.replacements !== "object" ||
       Object.entries(rules.replacements).some(([phrase, replacement]) => !phrase.trim() || typeof replacement !== "string")) {
@@ -72,24 +73,53 @@ function pattern(phrase, flags) {
   return new RegExp("(?<![\\p{L}\\p{N}])" + escaped + "(?![\\p{L}\\p{N}])", flags);
 }
 function analyze(record, rules) {
-  const findings = [], question = record.question.trim();
+  const findings = [], tags = [], question = record.question.trim();
   let suggested = question;
-  const words = question.split(/\s+/u).length;
-  if (words > rules.questionWordCue) findings.push("Length: " + words + " words. Can evidence move to the guidance?");
-  if (!question.endsWith("?")) findings.push("Question format: check the wording and ending punctuation.");
-  if (!record.description.trim() || !record.guidance.trim()) findings.push("Missing description or guidance. Confirm the source before relying on this example.");
-  for (const field of ["question", "description", "guidance"]) {
-    for (const phrase of rules.flagPhrases) {
-      if (pattern(phrase, "iu").test(record[field])) findings.push(field + ': “' + phrase + '”. Check whether the three fields or a reference define the criterion.');
-    }
+  const add = (id, label, field, evidence, reason, level = "Review cue") => {
+    if (rules.disabledTags?.includes(id)) return;
+    const tag = {id, label, field, evidence, reason, level};
+    tags.push(tag);
+    findings.push(id + " · " + label + " · " + level + " · " + field + ': “' + evidence + '” — ' + reason);
+  };
+  if (question.split(/\s+/u).length > rules.questionWordCue)
+    add("FW-SHORT", "Long question", "question", question, "Consider moving supporting detail into the guidance. The word limit is a configurable Forwood preference.");
+  if (!question.endsWith("?"))
+    add("FW-FORMAT", "Question format", "question", question, "The question has no closing question mark.", "Detected");
+  for (const field of ["description", "guidance"]) {
+    if (!record[field].trim())
+      add("FW-CONTEXT", "Missing supporting text", field, "(empty)", "Confirm the source and provide the context needed to answer.", "Detected");
   }
+  for (const field of ["question", "description", "guidance"]) {
+    const text = record[field];
+    for (const phrase of rules.flagPhrases) {
+      const match = text.match(pattern(phrase, "iu"));
+      if (match) {
+        const conditional = /^(if|when|where|as)\b/i.test(phrase);
+        add(conditional ? "FIT-1-FIELD" : "FIT-3-VAGUE",
+          conditional ? "Decision criterion" : "Vague qualifier", field, match[0],
+          "Check the question, description, guidance, and approved references for a usable criterion. A defined term can be acceptable.");
+      }
+    }
+    const role = text.match(/\b(authorized (?:person|individual)|approved person|competent person)\b/iu);
+    if (role) add("FIT-2-ROLE", "Role definition", field, role[0], "Confirm that this role and its qualification criteria are defined in an approved reference.");
+    const reference = text.match(/\b(it|this|that)\b/iu);
+    if (reference) add("FIT-9-REFERENCE", "Unclear object", field, reference[0], "Check that the reader can identify the object from the surrounding text.");
+    const late = text.match(/.+\b(after|before|only if|provided that)\b.+/iu);
+    if (late && !/^(after|before|only if|provided that)\b/iu.test(text.trim()))
+      add("FIT-10-ORDER", "Condition placement", field, late[0], "Check whether a prerequisite should appear before the direction to act. Timing descriptions may be acceptable.");
+    if (/([!?.,])\1|\(.*$/.test(text) && (/([!?.,])\1/.test(text) || (text.match(/\(/g) || []).length !== (text.match(/\)/g) || []).length))
+      add("FIT-10-PUNCT", "Punctuation", field, text, "Check repeated punctuation or unmatched parentheses.");
+  }
+  const combined = question.match(/\b(?:and|with)\b/iu);
+  if (combined) add("FW-ANSWER", "Combined checks", "question", question,
+    "Confirm whether one answer covers a single control. Several conditions may stay together when every applicable condition must pass and failures can be identified.");
   for (const [phrase, replacement] of Object.entries(rules.replacements)) {
     suggested = suggested.replace(pattern(phrase, "giu"), match => {
-      findings.push('Wording: “' + match + '” → “' + replacement + '”.');
+      add("FW-WORDING", "Plain wording", "question", match, 'Consider “' + replacement + '” while preserving meaning.');
       return match[0] === match[0].toUpperCase() ? replacement.charAt(0).toUpperCase() + replacement.slice(1) : replacement;
     });
   }
-  return {...record, suggested, draft: suggested, findings, status:"Pending", note:""};
+  return {...record, suggested, draft:suggested, findings, tags, status:"Pending", note:""};
 }
 function loadRows(records, rules) {
   if (!records.length) throw Error("No questions found below the selected header row.");
@@ -151,6 +181,7 @@ function renderQueue() {
   byId("queue").replaceChildren(...visible.map(row => {
     const button = make("button", row.question);
     button.setAttribute("aria-current", row === active);
+    for (const label of new Set(row.tags.map(tag => tag.label))) { const badge = make("small", label); badge.className = "qa-tag"; button.append(badge); }
     button.append(make("small", [row.role, row.id, row.cell, row.status].filter(Boolean).join(" · ")));
     button.onclick = () => { active = row; renderQueue(); renderDetail(); };
     return button;
@@ -198,15 +229,15 @@ function renderDetail() {
   guidance.style.whiteSpace = "pre-wrap";
   panel.replaceChildren(make("h2", [row.role, row.id, row.cell].filter(Boolean).join(" · ")), compare,
     make("h3","Description"), make("p", row.description || "Missing from import"), make("h3","What to look for"), guidance,
-    make("h3","Review cues"), row.findings.length ? findingList : make("p","No configured cues matched."),
-    make("p","Review question length, control alignment, and whether this role can verify the evidence."),
+    make("h3","Guideline tags"), row.findings.length ? findingList : make("p","No configured tags matched."),
+    make("p","Tags evaluate the imported text. Review cues need your judgment across all three fields. Scope, sequence, factual accuracy, role suitability, warning placement, and control alignment still require human review. Editing a suggestion does not recheck it."),
     noteLabel, actions, make("p", row.status + (row.final ? " · " + row.final : "")));
 }
 
 byId("export").onclick = async () => {
   try {
-    const data = [["Source workbook","Sheet","Question cell","ID","Role","Original question","Description","What to look for","Suggestion","Draft","Review cues","Decision","Final question","Reviewer","Decision time (UTC)","Decision note","Guidelines JSON"],
-      ...rows.map(row => [row.source,row.sheet,row.cell,row.id,row.role,row.question,row.description,row.guidance,row.suggested,row.draft,row.findings.join("\n"),row.status,row.final,row.reviewer,row.time,row.status === "Pending" ? row.note : row.recordedNote,reviewedRules])];
+    const data = [["Source workbook","Sheet","Question cell","ID","Role","Original question","Description","What to look for","Suggestion","Draft","Review cues","Decision","Final question","Reviewer","Decision time (UTC)","Decision note","Guidelines JSON","Structured tags JSON"],
+      ...rows.map(row => [row.source,row.sheet,row.cell,row.id,row.role,row.question,row.description,row.guidance,row.suggested,row.draft,row.findings.join("\n"),row.status,row.final,row.reviewer,row.time,row.status === "Pending" ? row.note : row.recordedNote,reviewedRules,JSON.stringify(row.tags)])];
     const encode = value => String(value ?? "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,"").replace(/[&<>]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;"})[char]);
     const zip = new JSZip();
     const ns = "http://schemas.openxmlformats.org/";
@@ -226,3 +257,4 @@ byId("export").onclick = async () => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) { message(error.message); }
 };
+
