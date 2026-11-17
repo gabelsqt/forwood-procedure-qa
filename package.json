@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "compromise": "^14.20.0",
+    "dictionary-en": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "nspell": "^2.1.5"
+  }
+}

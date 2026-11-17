@@ -1,8 +1,13 @@
-# Forwood Procedure QA
+# Procedure QA
 
-Private browser-based MVP for reviewing short checklist questions alongside their description and observable guidance. Use the sample or upload an XLSX workbook. The default mapping matches the Hot Work example, and the worksheet, header row, and column letters can be changed.
+Browser-based procedure and checklist review. Workbooks, edits and decisions are processed locally. Export a report before closing the page to keep your work.
 
-Rules flag wording and missing context. Suggestions are editable, and human decisions are recorded in a separate Excel report. This version runs in the browser and keeps the current review in memory until export. Uploads are processed locally. No AI service or shared storage is connected.
+Open Procedure-QA.html for the self-contained offline app, or serve dist/ as a static website.
 
-Serve the dist directory with any static web host.
-Guideline tags cite FIT criteria and Forwood preferences. Review cues include evidence and reasons and export with each question. The disabledTags setting accepts rule IDs to suppress individual checks.
+The app includes workbook preview and column mapping, configurable writing checks, offline US English spelling, selected grammar patterns, sequential issue decisions, manual verification and a final consistency check. Reports can be downloaded as Excel or HTML. Automatic findings require human review.
+
+To rebuild the offline language bundle, install the dependencies from package-lock.json and run:
+
+    npx esbuild language-entry.js --bundle --platform=browser --loader:.aff=text --loader:.dic=text --outfile=dist/language.js --minify
+
+Third-party licenses are included in dist/ and in the standalone HTML file.
