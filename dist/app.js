@@ -102,8 +102,15 @@ function analyze(record, rules) {
     }
     const role = text.match(/\b(authorized (?:person|individual)|approved person|competent person)\b/iu);
     if (role) add("FIT-2-ROLE", "Role definition", field, role[0], "Confirm that this role and its qualification criteria are defined in an approved reference.");
-    const reference = text.match(/\b(it|this|that)\b/iu);
-    if (reference) add("FIT-9-REFERENCE", "Unclear object", field, reference[0], "Check that the reader can identify the object from the surrounding text.");
+    for (const reference of text.matchAll(/\b(it|this|that)\b/giu)) {
+      add("FW-PRONOUN", "Connect pronoun", field, reference[0],
+        "Select this tag to identify what the word refers to or mark it as having no clear referent.");
+      const tag = tags[tags.length - 1];
+      if (tag?.id === "FW-PRONOUN" && tag.field === field && tag.offset === undefined) {
+        tag.offset = reference.index;
+        tag.connection = {status:"Unreviewed", referent:""};
+      }
+    }
     const late = text.match(/.+\b(after|before|only if|provided that)\b.+/iu);
     if (late && !/^(after|before|only if|provided that)\b/iu.test(text.trim()))
       add("FIT-10-ORDER", "Condition placement", field, late[0], "Check whether a prerequisite should appear before the direction to act. Timing descriptions may be acceptable.");
@@ -203,7 +210,65 @@ function renderDetail() {
   label.append(draft);
   compare.append(original, label);
   const findingList = make("ul", "");
-  for (const finding of row.findings) findingList.append(make("li", finding));
+  for (const tag of row.tags) {
+    const item = make("li", "");
+    if (tag.id !== "FW-PRONOUN") {
+      item.textContent = tag.id + " · " + tag.label + " · " + tag.level + " · " + tag.field +
+        ': “' + tag.evidence + '” — ' + tag.reason;
+      findingList.append(item);
+      continue;
+    }
+    const button = make("button", tag.label + ' · “' + tag.evidence + '” · ' + tag.field);
+    button.className = "secondary";
+    const editor = make("div", "");
+    editor.hidden = true;
+    const source = row[tag.field];
+    const context = make("p", "");
+    context.append(document.createTextNode(source.slice(0, tag.offset)),
+      make("mark", source.slice(tag.offset, tag.offset + tag.evidence.length)),
+      document.createTextNode(source.slice(tag.offset + tag.evidence.length)));
+    const label = make("label", "What does this word refer to? Use the object name or a phrase from the text.");
+    const referent = make("input", "");
+    referent.value = tag.connection.referent;
+    label.append(referent);
+    const status = make("p", "");
+    status.setAttribute("role", "status");
+    const refreshStatus = () => {
+      status.textContent = tag.connection.status +
+        (tag.connection.referent ? " → " + tag.connection.referent : "");
+    };
+    refreshStatus();
+    button.setAttribute("aria-expanded", "false");
+    button.onclick = () => {
+      editor.hidden = !editor.hidden;
+      button.setAttribute("aria-expanded", String(!editor.hidden));
+      if (!editor.hidden) referent.focus();
+    };
+    const actions = make("div", "");
+    actions.className = "actions";
+    for (const [value, caption] of [
+      ["Connected", "Save connection"],
+      ["No clear referent", "No clear referent"],
+      ["Not a pronoun here", "Not a pronoun here"],
+      ["Unreviewed", "Reset"]
+    ]) {
+      const action = make("button", caption);
+      action.onclick = () => {
+        if (value === "Connected" && !referent.value.trim()) {
+          status.textContent = "Enter the object or phrase first.";
+          referent.focus();
+          return;
+        }
+        tag.connection = {status:value, referent:value === "Connected" ? referent.value.trim() : ""};
+        referent.value = tag.connection.referent;
+        refreshStatus();
+      };
+      actions.append(action);
+    }
+    editor.append(context, label, actions);
+    item.append(button, status, editor);
+    findingList.append(item);
+  }
   const noteLabel = make("label", "Decision note");
   const note = make("textarea", "");
   note.value = row.note;
@@ -237,7 +302,7 @@ function renderDetail() {
 byId("export").onclick = async () => {
   try {
     const data = [["Source workbook","Sheet","Question cell","ID","Role","Original question","Description","What to look for","Suggestion","Draft","Review cues","Decision","Final question","Reviewer","Decision time (UTC)","Decision note","Guidelines JSON","Structured tags JSON"],
-      ...rows.map(row => [row.source,row.sheet,row.cell,row.id,row.role,row.question,row.description,row.guidance,row.suggested,row.draft,row.findings.join("\n"),row.status,row.final,row.reviewer,row.time,row.status === "Pending" ? row.note : row.recordedNote,reviewedRules,JSON.stringify(row.tags)])];
+      ...rows.map(row => [row.source,row.sheet,row.cell,row.id,row.role,row.question,row.description,row.guidance,row.suggested,row.draft,row.tags.map(tag => tag.id + " · " + tag.label + " · " + tag.field + ": " + tag.evidence + " — " + tag.reason + (tag.connection ? " · " + tag.connection.status + (tag.connection.referent ? " → " + tag.connection.referent : "") : "")).join("\n"),row.status,row.final,row.reviewer,row.time,row.status === "Pending" ? row.note : row.recordedNote,reviewedRules,JSON.stringify(row.tags)])];
     const encode = value => String(value ?? "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,"").replace(/[&<>]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;"})[char]);
     const zip = new JSZip();
     const ns = "http://schemas.openxmlformats.org/";
