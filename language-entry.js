@@ -50,5 +50,11 @@ function language(text, allowed, enabledGrammar, enabledSpelling) {
   }
   return findings;
 }
-window.localLanguage = {pronouns,language};
+function checkWord(word) {
+  return /^[A-Z]{2,}$/.test(word) || spelling.correct(word) || spelling.correct(word.toLowerCase());
+}
+function suggestions(word) {
+  return spelling.suggest(word).slice(0,5);
+}
+window.localLanguage = {pronouns,language,checkWord,suggestions};
 

@@ -12,6 +12,186 @@ const make = (tag, value) => {
   }
   return element;
 };
+function filePicker(input) {
+  const wrapper=make("div","");
+  wrapper.className="file-picker";
+  const button=make("button","Choose file");
+  button.type="button";button.className="secondary";
+  const filename=make("span","No file selected");
+  filename.className="file-picker-name";
+  input.hidden=true;
+  button.onclick=()=>input.click();
+  input.addEventListener("change",()=>{
+    filename.textContent=input.files[0]?.name || "No file selected";
+  });
+  wrapper.append(input,button,filename);
+  return wrapper;
+}
+let spellingMenu;
+function closeSpellingMenu() {
+  if(spellingMenu) spellingMenu.remove();
+  spellingMenu=null;
+}
+document.addEventListener("pointerdown",event=>{
+  if(spellingMenu&&!spellingMenu.contains(event.target))closeSpellingMenu();
+});
+document.addEventListener("keydown",event=>{
+  if(event.key==="Escape")closeSpellingMenu();
+});
+function spellingOptions() {
+  try {
+    return rows.length && reviewedRules ? JSON.parse(reviewedRules) : settings();
+  } catch { return {disabledTags:[],acceptedWords:[]}; }
+}
+function installSpellingEditor(input) {
+  if(input.dataset.spellingEditor) { input._refreshSpelling?.(); return; }
+  input.dataset.spellingEditor="true";
+  if(!input.hasAttribute("aria-label")) {
+    const label=input.closest("label");
+    const caption=label ? [...label.childNodes].filter(node=>node.nodeType===3).map(node=>node.textContent).join("").trim() : "";
+    if(caption)input.setAttribute("aria-label",caption);
+  }
+  const wrapper=make("div","");
+  wrapper.className="spelling-editor";
+  const mirror=make("div","");
+  mirror.className="spelling-mirror";
+  mirror.setAttribute("aria-hidden","true");
+  input.parentNode.insertBefore(wrapper,input);
+  wrapper.append(mirror,input);
+  input.classList.add("spelling-input");
+  let timer;
+  let words=[];
+  function refresh() {
+    if(!input.isConnected)return;
+    const style=getComputedStyle(input);
+    for(const property of ["fontFamily","fontSize","fontWeight","fontStyle","letterSpacing","lineHeight",
+      "textAlign","textIndent","paddingTop","paddingBottom","paddingLeft","paddingRight","borderTopWidth",
+      "borderBottomWidth","borderLeftWidth","borderRightWidth","tabSize"]) mirror.style[property]=style[property];
+    mirror.style.width=input.clientWidth+"px";
+    mirror.style.height=input.clientHeight+"px";
+    mirror.style.borderStyle="solid";
+    mirror.style.borderColor="transparent";
+    mirror.style.boxSizing="content-box";
+    // Copy the textarea's outer dimensions, including its own padding and border.
+    mirror.style.boxSizing="border-box";
+    mirror.style.width=(input.clientWidth+parseFloat(style.borderLeftWidth)+parseFloat(style.borderRightWidth))+"px";
+    mirror.style.height=input.offsetHeight+"px";
+    const options=spellingOptions();
+    const enabled=!options.disabledTags.includes("FW-SPELLING");
+    const allowed=new Set((options.acceptedWords||[]).map(word=>word.toLowerCase()));
+    const content=make("div","");
+    content.className="spelling-mirror-content";
+    words=[];
+    let cursor=0;
+    for(const match of input.value.matchAll(/[A-Za-z]+(?:['’][A-Za-z]+)?/g)) {
+      content.append(document.createTextNode(input.value.slice(cursor,match.index)));
+      const word=match[0];
+      if(enabled&&!allowed.has(word.toLowerCase())&&!localLanguage.checkWord(word)) {
+        const span=make("span",word);
+        span.className="spelling-error";
+        content.append(span);
+        words.push({word,start:match.index,end:match.index+word.length,span});
+      } else content.append(document.createTextNode(word));
+      cursor=match.index+word.length;
+    }
+    content.append(document.createTextNode(input.value.slice(cursor)+"\n"));
+    mirror.replaceChildren(content);
+    content.style.transform="translate("+(-input.scrollLeft)+"px,"+(-input.scrollTop)+"px)";
+  }
+  input._refreshSpelling=refresh;
+  input.addEventListener("input",()=>{
+    if(input.closest(".inline-correction")){input.style.height="auto";input.style.height=Math.max(80,input.scrollHeight+4)+"px";}
+    closeSpellingMenu();
+    clearTimeout(timer);timer=setTimeout(refresh,150);
+  });
+  input.addEventListener("scroll",()=>{
+    const content=mirror.firstElementChild;
+    if(content)content.style.transform="translate("+(-input.scrollLeft)+"px,"+(-input.scrollTop)+"px)";
+  });
+  function openMenu(word,x,y) {
+    closeSpellingMenu();
+    const menu=make("div","");
+    spellingMenu=menu;
+    menu.className="spelling-menu";
+    menu.setAttribute("role","menu");
+    menu.setAttribute("aria-label","Spelling suggestions for "+word.word);
+    menu.append(make("small","Spelling · "+word.word));
+    const suggestions=localLanguage.suggestions(word.word);
+    if(!suggestions.length)menu.append(make("p","No suggestions found"));
+    for(const suggestion of suggestions) {
+      const button=make("button",suggestion);
+      button.type="button";button.setAttribute("role","menuitem");
+      button.onclick=()=>{
+        if(input.value.slice(word.start,word.end)!==word.word){closeSpellingMenu();return;}
+        input.focus();
+        input.setRangeText(suggestion,word.start,word.end,"end");
+        closeSpellingMenu();
+        input.dispatchEvent(new Event("input",{bubbles:true}));
+        refresh();
+      };
+      menu.append(button);
+    }
+    const close=make("button","Close");
+    close.type="button";close.setAttribute("role","menuitem");
+    close.onclick=()=>{closeSpellingMenu();input.focus();};
+    menu.append(close);
+    menu.onkeydown=event=>{
+      const buttons=[...menu.querySelectorAll("button")];
+      const index=buttons.indexOf(document.activeElement);
+      if(event.key==="ArrowDown"||event.key==="ArrowUp"){
+        event.preventDefault();
+        buttons[(index+(event.key==="ArrowDown"?1:-1)+buttons.length)%buttons.length].focus();
+      }
+    };
+    document.body.append(menu);
+    menu.style.left=Math.max(8,Math.min(x,window.innerWidth-menu.offsetWidth-8))+"px";
+    menu.style.top=Math.max(8,Math.min(y,window.innerHeight-menu.offsetHeight-8))+"px";
+    menu.querySelector("button")?.focus();
+  }
+  input.addEventListener("contextmenu",event=>{
+    refresh();
+    const word=words.find(word=>[...word.span.getClientRects()].some(rect=>
+      event.clientX>=rect.left&&event.clientX<=rect.right&&event.clientY>=rect.top&&event.clientY<=rect.bottom));
+    if(!word)return;
+    event.preventDefault();openMenu(word,event.clientX,event.clientY);
+  });
+  input.addEventListener("keydown",event=>{
+    if((event.shiftKey&&event.key==="F10")||event.key==="ContextMenu"){
+      refresh();
+      const word=words.find(word=>input.selectionStart>=word.start&&input.selectionStart<=word.end);
+      if(word){event.preventDefault();const rect=word.span.getBoundingClientRect();openMenu(word,rect.left,rect.bottom);}
+    }
+  });
+  const observer=new ResizeObserver(refresh);
+  observer.observe(input);
+  input._disposeSpelling=()=>{clearTimeout(timer);observer.disconnect();};
+  refresh();
+}
+function disposeSpellingEditors(container) {
+  for(const input of container.querySelectorAll("textarea"))input._disposeSpelling?.();
+}
+function refreshSpellingEditors(container) {
+  for(const input of container.querySelectorAll("textarea"))installSpellingEditor(input);
+}
+const pictureRecommendations = [
+  "Realistic.",
+  "Clearly readable.",
+  "Technically believable.",
+  "Appropriate to the industry.",
+  "Appropriate to the task.",
+  "Visually accurate enough for a worker or supervisor to say, “Yes, that’s right” or “No, that’s wrong.”"
+];
+function pictureRecommendationList() {
+  const list=make("ol","");
+  list.className="picture-recommendations";
+  for(const recommendation of pictureRecommendations)list.append(make("li",recommendation));
+  return list;
+}
+function pictureRecommendationDetails() {
+  const details=make("details","");
+  details.append(make("summary","Picture review criteria"),pictureRecommendationList());
+  return details;
+}
 const defaults = {
   questionWordCue: 16,
   questionWordLimit: 24,
@@ -24,7 +204,7 @@ const checkDefinitions = [
   ["FW-FORMAT", "Question mark", "Check that the question ends with a question mark."],
   ["FW-CONTEXT", "Supporting text", "Flag empty description or guidance fields."],
   ["FIT-1-FIELD", "Decision criteria", "Find discretionary phrases so you can check the applicable condition."],
-  ["MANUAL-PICTURE", "Picture accuracy — manual review", "Confirm that the picture shows the intended control and agrees with the text."],
+  ["MANUAL-PICTURE", "Picture accuracy — manual review", "Check realism, readability, technical credibility, industry and task suitability, and whether a worker or supervisor can judge its accuracy."],
   ["MANUAL-DESCRIPTION", "Description accuracy — manual review", "Confirm that the description accurately states the control being checked."],
   ["MANUAL-GUIDANCE", "Guidance accuracy — manual review", "Confirm that What to Look For gives accurate evidence for this control."],
   ["FIT-2-PHYSICAL", "Physical difficulty — manual review", "Ask someone familiar with the task whether reach, visibility, posture, tools, and the work area allow it to be performed."],
@@ -193,8 +373,8 @@ byId("file").onchange = async event => {
   }
 };
 
-const mappingFields = {question:"column", description:"description", guidance:"guidance", role:"role", id:"idColumn"};
-const mappingLabels = {question:"Question",description:"Description",guidance:"What to look for",role:"Role",id:"ID"};
+const mappingFields = {question:"column", description:"description", guidance:"guidance", role:"role", risk:"riskColumn", control:"controlColumn", id:"idColumn"};
+const mappingLabels = {question:"Question",description:"Description",guidance:"What to look for",role:"Level",risk:"Critical risk",control:"Critical control",id:"ID"};
 let previewRevision = 0;
 function readSheetRows(data, strings) {
   return nodes(data, "row").map(row => ({
@@ -233,7 +413,7 @@ async function renderWorkbookPreview() {
     const aliases = {
       question:/^(questions?|procedure|english)$/i,
       description:/^description$/i, guidance:/^(what to look for|guidance)$/i,
-      role:/^(section|role|audience)$/i, id:/^(no\.?|id|number)$/i
+      role:/^(section|role|audience|level)$/i, risk:/^(critical risk|risk)$/i, control:/^(critical control|control)$/i, id:/^(no\.?|id|number)$/i
     };
     for (const [field,id] of Object.entries(mappingFields)) {
       if (byId(id).value && !columns.includes(byId(id).value)) byId(id).value = "";
@@ -358,7 +538,7 @@ function analyze(record, rules) {
   add("FIT-2-PHYSICAL", "Physical feasibility", "question", "(manual review)",
     "Can the worker physically do this as written? Confirm reach, visibility, posture, tool use, and working conditions with someone who knows the task. If field confirmation is needed, choose Review later.", "Manual review");
   for (const [id,label,field,reason] of [
-    ["MANUAL-PICTURE","Picture accuracy","picture","Does the picture show the intended control and agree with the question, description, and guidance? Review the picture in your source material. If it is unavailable, choose Review later. If no picture is intended, choose No change needed."],
+    ["MANUAL-PICTURE","Picture accuracy","picture","Does the picture show the intended control and agree with the question, description, and guidance? " + pictureRecommendations.join(" ") + " If the picture is unavailable, choose Review later."],
     ["MANUAL-DESCRIPTION","Description accuracy","description","Does the description accurately state the control being checked? Check against the approved source and the picture when available."],
     ["MANUAL-GUIDANCE","Guidance accuracy","guidance","Does What to Look For give accurate, sufficient evidence for answering this question? Check that the picture supports the same criteria."]
   ]) add(id,label,field,"(manual review)",reason,"Manual review");
@@ -478,7 +658,75 @@ function analyze(record, rules) {
       return match[0] === match[0].toUpperCase() ? replacement.charAt(0).toUpperCase() + replacement.slice(1) : replacement;
     });
   }
-  return {...record, suggested, draft:suggested, findings, tags, descriptionDraft:record.description, guidanceDraft:record.guidance, finalCheck:{status:"Pending"}, status:"Pending", note:""};
+  return {...record, originalPictureUrl:record.pictureUrl || "",acceptedContent:{question:record.question,description:record.description,guidance:record.guidance,picture:record.pictureUrl || ""},finalPictureCheck:{status:"Pending"}, analysisText:{question:record.question,description:record.description,guidance:record.guidance},tagHistory:[],suggested, draft:suggested, findings, tags, descriptionDraft:record.description, guidanceDraft:record.guidance, finalCheck:{status:"Pending"}, status:"Pending", note:""};
+}
+const automaticRechecks = new WeakMap();
+function scheduleRecheck(row, field, input) {
+  if(!automaticRechecks.has(row)) automaticRechecks.set(row,new Map());
+  const timers=automaticRechecks.get(row);
+  clearTimeout(timers.get(field));
+  timers.set(field,setTimeout(() => {
+    const current = field === "question" ? row.draft : row[field+"Draft"];
+    if(current === row.analysisText[field]) return;
+    const editing = document.activeElement === input;
+    const start = input.selectionStart, end = input.selectionEnd;
+    const beforeReview=row.reviewStage==="read";
+    recheckSection(row,field,JSON.parse(reviewedRules));
+    if(beforeReview)row.reviewStage="read";
+    renderQueue();
+    if(active !== row) return;
+    renderDetail();
+    if(editing) {
+      const source = byId("detail").querySelector('[data-edit-field="'+field+'"]');
+      if(beforeReview)source?.ondblclick({preventDefault(){}});
+      const editor = byId("detail").querySelector('[data-correction-field="'+field+'"] textarea');
+      if(editor){editor.focus();editor.setSelectionRange(start,end);}
+    }
+  },1000));
+}
+function pictureRecheckRequired(row) {
+  return row.draft !== row.question || row.descriptionDraft !== row.description ||
+    row.guidanceDraft !== row.guidance || (row.pictureUrl || "") !== row.originalPictureUrl;
+}
+function pictureReviewKey(row) {
+  return JSON.stringify([row.draft,row.descriptionDraft,row.guidanceDraft,row.pictureUrl || ""]);
+}
+function currentSection(row, field) {
+  return field === "picture" ? row.pictureUrl || "" : field === "question" ? row.draft : row[field+"Draft"];
+}
+function sectionChanged(row, field) {
+  return currentSection(row,field) !== row.acceptedContent[field];
+}
+function nextUnfinishedQuestion(current) {
+  const index=rows.indexOf(current);
+  const ordered=[...rows.slice(index+1),...rows.slice(0,index)];
+  return ordered.find(row=>row.finalCheck.status!=="Confirmed");
+}
+function reviewTags(row) {
+  return [...(row.tagHistory || []), ...row.tags];
+}
+function recheckSection(row, field, rules) {
+  const text = field === "question" ? row.draft : row[field+"Draft"];
+  const snapshot = {...row, ...row.analysisText, [field]:text};
+  const fresh = analyze(snapshot, rules).tags.filter(tag=>tag.field===field);
+  row.tagHistory ??= [];
+  for (const tag of row.tags.filter(tag=>tag.field===field)) {
+    if(tag.decision !== "Pending")
+      row.tagHistory.push({...tag, analyzedText:row.analysisText[field], archived:true});
+  }
+  row.tags = [...row.tags.filter(tag=>tag.field!==field),...fresh];
+  row.analysisText[field] = text;
+  row.findings = row.tags.map(tag=>tag.id+" · "+tag.label+" · "+tag.reason);
+  row.finalCheck = {status:"Pending"};
+  const order = {picture:0,question:1,description:2,guidance:3};
+  const ordered = [...row.tags].sort((a,b)=>order[a.field]-order[b.field] ||
+    Number(a.level==="Manual review")-Number(b.level==="Manual review"));
+  let next = ordered.findIndex(tag=>tag.field===field && !["Resolved","Dismissed"].includes(tag.decision));
+  if(next<0)next=ordered.findIndex(tag=>!["Resolved","Dismissed"].includes(tag.decision));
+  row.issueIndex = Math.max(0,next);
+  row.reviewStage = next<0 ? "final" : "issues";
+  row.status = row.tags.some(tag=>tag.decision==="Needs edit") ? "Needs edit" :
+    row.tags.some(tag=>tag.decision==="Pending") ? "Pending" : "Reviewed";
 }
 function loadRows(records, rules) {
   if (!records.length) throw Error("No questions found below the selected header row.");
@@ -501,7 +749,7 @@ byId("run").onclick = async () => {
   try {
     if (!book) throw Error("Choose an .xlsx workbook or try the sample.");
     const rules = settings();
-    const fields = {question:"column", id:"idColumn", description:"description", guidance:"guidance", role:"role"};
+    const fields = {question:"column", id:"idColumn", description:"description", guidance:"guidance", role:"role", risk:"riskColumn", control:"controlColumn"};
     const columns = Object.fromEntries(Object.entries(fields).map(([key, id]) => [key, byId(id).value.trim().toUpperCase()]));
     if (!columns.question || Object.values(columns).some(value => value && !/^[A-Z]{1,3}$/.test(value))) throw Error("Enter Excel column letters. The question column is required.");
     const header = Number(byId("headerRow").value);
@@ -524,13 +772,29 @@ byId("run").onclick = async () => {
     loadRows(records, rules);
   } catch (error) { message(error.message); }
 };
+function samplePicture(kind) {
+  const frame = '<svg xmlns="http://www.w3.org/2000/svg" width="700" height="360" viewBox="0 0 700 360"><rect width="700" height="360" rx="18" fill="#edf3f5"/><text x="28" y="34" font-family="Arial,sans-serif" font-size="16" fill="#526678">ILLUSTRATIVE SAMPLE</text>';
+  const drawings = {
+    attached:'<path d="M100 260 C38 155 86 75 173 80 C272 84 276 173 215 225 L160 280" fill="none" stroke="#7c93a0" stroke-width="30"/><path d="M100 260 C38 155 86 75 173 80 C272 84 276 173 215 225 L160 280" fill="none" stroke="#b9c8d0" stroke-width="5" stroke-dasharray="10 8"/><path d="M200 200 Q290 210 360 118" fill="none" stroke="#344e5d" stroke-width="5"/><rect x="350" y="75" width="290" height="220" rx="12" fill="white" stroke="#3d655c" stroke-width="3"/><circle cx="375" cy="98" r="7" fill="#edf3f5"/><g font-family="Arial,sans-serif" fill="#244e44"><text x="375" y="140" font-size="23">SLING IDENTIFICATION</text><text x="375" y="181" font-size="20">ID: SLING-DEMO-01</text><text x="375" y="218" font-size="17">Manufacturer information</text><text x="375" y="254" font-size="16">Illustration — training only</text><text x="85" y="333" font-size="19">Sling eye with an attached, readable identification tag</text></g>',
+    record:'<rect x="120" y="65" width="460" height="235" rx="12" fill="white" stroke="#718b97" stroke-width="3"/><text x="145" y="105" font-family="Arial,sans-serif" font-size="25" fill="#244e44">SLING INSPECTION RECORD</text><path d="M145 125H555 M145 180H555 M145 235H555 M300 125V275 M430 125V275" stroke="#a3b5be" stroke-width="2"/><g font-family="Arial,sans-serif" font-size="18" fill="#344e5d"><text x="150" y="157">Date</text><text x="315" y="157">Inspector</text><text x="445" y="157">Item</text><text x="150" y="213">20 Nov 2026</text><text x="315" y="213">A. Smith</text><text x="445" y="213">DEMO-01</text></g><text x="120" y="330" font-family="Arial,sans-serif" font-size="20" fill="#244e44">Record showing an inspection date and name</text>',
+    damaged:'<rect x="200" y="65" width="300" height="230" rx="12" fill="white" stroke="#a27343" stroke-width="3"/><circle cx="230" cy="88" r="8" fill="#edf3f5"/><text x="225" y="132" font-family="Arial,sans-serif" font-size="25" fill="#344e5d">SLING TAG</text><path d="M225 160H465 M225 188H450 M225 216H465" stroke="#89989d" stroke-width="7"/><path d="M320 147L350 175L328 203L365 233L345 294" stroke="#edf3f5" stroke-width="25" fill="none"/><path d="M240 172L455 225 M260 230L440 172" stroke="#b8b1a6" stroke-width="20" opacity=".8"/><text x="155" y="330" font-family="Arial,sans-serif" font-size="20" fill="#755130">Sling tag with obscured identification</text>'
+  };
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(frame + drawings[kind] + "</svg>");
+}
 byId("demo").onclick = () => {
   try {
     loadRows([
-      {id:"1", role:"Worker", question:"Have you carried out a check to confirm that the inspection tag is attached and readable prior to starting work?", description:"Before work starts, check that the inspection tag is attached and readable.", guidance:"Look for the tag on the item. Confirm that its text can be read."},
-      {id:"2", role:"Supervisor", question:"Is the inspection record complete prior to handover?", description:"Confirm that the inspection was recorded.", guidance:"Look for the inspection date and the name of the person who checked it."},
-      {id:"3", role:"Worker", question:"Is the inspection tag replaced as required?", description:"Replace tags when the approved criteria apply.", guidance:""}
-    ].map((row, index) => ({...row, source:"Sample", sheet:"Sample", cell:"C" + (index + 2)})), settings());
+      {id:"1", role:"Worker", pictureUrl:samplePicture("attached"), question:"Have you carried out a check to confirm that the crane sling identification tag is attached and readable prior to lifting?",
+        description:"Before the lift, check the sling identification tag against the identification requirements in the approved lifting procedure.",
+        guidance:"• Find the identification tag attached to the sling.\n• Check that the sling identification can be read.\n• Compare the tag information with the approved lifting procedure.\n• If identification is missing or unreadable, follow the procedure for reporting and isolating the sling."},
+      {id:"2", role:"Supervisor", pictureUrl:samplePicture("record"), question:"Is the crane sling inspection recrod complete prior to lifting?",
+        description:"Confirm that the sling inspction is documented in the required inspection record.",
+        guidance:"Check the sling identification, inspection date and inspector's signautre against the approved inspection record."},
+      {id:"3", role:"Worker", pictureUrl:samplePicture("damaged"), question:"Is the crane sling tag replaced as required?",
+        description:"Check whether the sling identification tag meets the approved lifting procedure's identification requirements.",
+        guidance:""}
+    ].map((row, index) => ({...row, risk:"Lifting operations",
+      control:"Mechanical integrity of the lifting equipment",source:"Illustrative sample", sheet:"Sling tag inspection", cell:"C" + (index + 2)})), settings());
   } catch (error) { message(error.message); }
 };
 
@@ -567,7 +831,7 @@ const tagColors = {
   "FIT-10-ORDER":["#e1f1d9","#416d2c","#83ac6d"],
   "FIT-10-PUNCT":["#f1e5ff","#623895","#9c72cd"],
   "FW-ANSWER":["#d9f2ee","#1d685b","#50a494"],
-  "FW-SHORT":["#ffead7","#8a4c14","#cc8b4e"],
+  "FW-SHORT":["#fff0c7","#6b510d","#c9a243"],
   "FW-WORDING":["#e1f1d9","#416d2c","#83ac6d"]
 };
 function colorTag(element, id) {
@@ -611,14 +875,60 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape") exitIssueFocus();
 });
 
+function contextBar(item, onChange = () => {}, readOnlyLevel = false) {
+  const bar=make("section","");
+  bar.className="review-context-bar";
+  bar.setAttribute("aria-label","Risk and control context");
+  for(const [field,caption] of [["risk","Critical risk"],["control","Critical control"]]) {
+    if(readOnlyLevel) {
+      const value=make("div","");
+      value.className="context-level";
+      value.append(make("span",caption),make("strong",item[field] || "Not specified"));
+      bar.append(value);
+      continue;
+    }
+    const label=make("label",caption),input=make("input","");
+    input.value=item[field] || "";
+    input.placeholder="Not specified — enter here";
+    input.oninput=()=>{item[field]=input.value;onChange();};
+    label.append(input);bar.append(label);
+  }
+  if(readOnlyLevel) {
+    const level=make("div","");
+    level.className="context-level";
+    const role=(item.role||"").trim();
+    level.append(make("span","Level"),make("strong",/^(worker|operator)$/i.test(role)?"Operator":role || "Not specified"));
+    bar.append(level);
+    return bar;
+  }
+  const label=make("label","Level"),select=make("select","");
+  select.append(new Option("Select level",""),new Option("Operator","Worker"),
+    new Option("Supervisor","Supervisor"),new Option("Manager","Manager"));
+  const role=(item.role||"").trim();
+  select.value=/^operator$/i.test(role)?"Worker":role;
+  if(role && ![...select.options].some(option=>option.value===role) && !/^operator$/i.test(role))
+    select.append(new Option(role,role));
+  select.value=/^operator$/i.test(role)?"Worker":role;
+  select.onchange=()=>{item.role=select.value;onChange();};
+  label.append(select);bar.append(label);
+  return bar;
+}
+
 function renderDetail() {
+  disposeSpellingEditors(byId("detail"));
+  closeSpellingMenu();
   exitIssueFocus();
   const row = active, panel = byId("detail");
+  const context = contextBar(row, () => {
+    row.finalCheck={status:"Pending"};
+    renderFinalCheck();
+  }, true);
   const tagDecisionViews = new Map();
+  const correctionEditors = new Map();
   const stageBar = make("div", "");
   stageBar.className = "stage-bar";
   const orderedTags = [...row.tags].sort((a,b) => {
-    const order = {question:0,description:1,guidance:2,picture:3};
+    const order = {picture:0,question:1,description:2,guidance:3};
     return order[a.field]-order[b.field] || Number(a.level==="Manual review")-Number(b.level==="Manual review");
   });
   row.reviewStage ??= "read";
@@ -628,12 +938,47 @@ function renderDetail() {
   const finalPanel = make("section", "");
   finalPanel.className = "final-check";
   function renderFinalCheck() {
+    const dirtyFields = ["question","description","guidance"].filter(field =>
+      (field==="question"?row.draft:row[field+"Draft"]) !== row.analysisText[field]);
     const remaining = row.tags.filter(tag => !["Resolved","Dismissed"].includes(tag.decision)).length;
+    if(dirtyFields.length) {
+      finalPanel.replaceChildren(make("h3","Final check"),make("p","Updating analysis…"));
+      return;
+    }
     if (remaining) {
       finalPanel.replaceChildren(make("h3","Final check"),
         make("p", "Finish " + remaining + " remaining issue" + (remaining === 1 ? "" : "s") + " to review the final draft."));
       return;
     }
+    if(pictureRecheckRequired(row)) {
+      const key=pictureReviewKey(row);
+      if(row.finalPictureCheck?.key!==key)row.finalPictureCheck={status:"Pending",key};
+      if(!["Confirmed","Not needed"].includes(row.finalPictureCheck.status)) {
+        const title=make("h3","Final picture check");
+        const prompt=make("p","The content changed. Does the picture still match the corrected question, description, and guidance?");
+        const picture=make("img","");
+        picture.className="review-picture";picture.alt="Picture for final verification";
+        picture.hidden=!row.pictureUrl;if(row.pictureUrl)picture.src=row.pictureUrl;
+        const actions=make("div","");actions.className="actions";
+        for(const [value,caption] of [["Confirmed","Picture matches revised content"],["Not needed","No picture needed"]]) {
+          const button=make("button",caption);
+          button.disabled=value==="Confirmed"&&!row.pictureUrl;
+          button.onclick=()=>{
+            const reviewer=byId("reviewer").value.trim();
+            if(!reviewer){byId("reviewer").focus();message("Enter your reviewer name first.");return;}
+            row.finalPictureCheck={status:value,key,reviewer,time:new Date().toISOString(),criteria:[...pictureRecommendations]};
+            renderFinalCheck();
+          };
+          actions.append(button);
+        }
+        const replace=make("button",row.pictureUrl?"Replace picture":"Choose picture");
+        replace.className="secondary";
+        replace.onclick=()=>pictureInput.click();
+        actions.append(replace);
+        finalPanel.replaceChildren(title,prompt,picture,pictureRecommendationDetails(),actions);
+        return;
+      }
+    } else row.finalPictureCheck={status:"Not required"};
     const heading = make("h3","Final check · Consistency");
     const preview = make("div","");
     preview.className = "final-draft";
@@ -655,12 +1000,39 @@ function renderDetail() {
         const reviewer=byId("reviewer").value.trim();
         if(value!=="Pending"&&!reviewer){byId("reviewer").focus();message("Enter your reviewer name first.");return;}
         row.finalCheck={status:value,reviewer:value==="Pending"?"":reviewer,time:value==="Pending"?"":new Date().toISOString(),
-          question:row.draft,description:row.descriptionDraft,guidance:row.guidanceDraft};
+          question:row.draft,description:row.descriptionDraft,guidance:row.guidanceDraft,pictureCheck:row.finalPictureCheck};
         renderFinalCheck();
       };
       actions.append(action);
     }
-    finalPanel.replaceChildren(heading,preview,prompt,actions,status);
+    if(row.finalCheck.status === "Confirmed") {
+      const next=nextUnfinishedQuestion(row);
+      if(next) {
+        const nextButton=make("button","Next question");
+        nextButton.className="decision-primary";
+        nextButton.onclick=()=>{
+          active=next;
+          byId("filter").value="All";
+          byId("search").value="";
+          renderQueue();
+          renderDetail();
+          byId("detail").scrollIntoView({block:"start",behavior:"smooth"});
+        };
+        actions.prepend(nextButton);
+      } else {
+        const complete=make("p","All questions reviewed. Export your report to keep the review.");
+        complete.setAttribute("role","status");
+        actions.prepend(complete);
+      }
+      renderQueue();
+    }
+    if(pictureRecheckRequired(row)) {
+      const pictureStatus=make("p",row.finalPictureCheck.status==="Confirmed"?"Picture verified against revised content.":"Picture marked as not needed.");
+      const reopenPicture=make("button","Reopen picture check");
+      reopenPicture.className="secondary";
+      reopenPicture.onclick=()=>{row.finalPictureCheck={status:"Pending",key:pictureReviewKey(row)};row.finalCheck={status:"Pending"};renderFinalCheck();};
+      finalPanel.replaceChildren(heading,preview,pictureStatus,reopenPicture,prompt,actions,status);
+    } else finalPanel.replaceChildren(heading,preview,prompt,actions,status);
   }
   function resetFinalCheck() {
     row.finalCheck = {status:"Pending"};
@@ -678,14 +1050,12 @@ function renderDetail() {
   const counter = make("small", "");
   counter.setAttribute("role", "status");
   const invalidateResolved = field => {
-    resetFinalCheck();
-    for (const tag of row.tags.filter(tag => tag.field === field && tag.decision === "Resolved")) {
-      tag.decision = "Pending";
-      tag.reviewer = "";
-      tag.decisionTime = "";
-      const control = tagDecisionViews.get(tag);
-      if (control) { control.chip.textContent = tag.label; control.status.textContent = "Pending — text changed"; }
+    const current = field === "question" ? row.draft : row[field+"Draft"];
+    for (const [tag,view] of tagDecisionViews) {
+      if (tag.field === field && view.continueButton)
+        view.continueButton.textContent = sectionChanged(row,field) ? "Accept changes" : "Continue";
     }
+    resetFinalCheck();
     row.status = row.tags.some(tag => tag.decision === "Needs edit") ? "Needs edit" :
       row.tags.some(tag => tag.decision === "Pending") ? "Pending" : "Reviewed";
     renderQueue();
@@ -697,20 +1067,12 @@ function renderDetail() {
     counter.textContent = result.count + " words · " + result.label +
       " · preferred maximum " + rules.questionWordCue + ", upper maximum " + rules.questionWordLimit;
   };
-  draft.oninput = () => { row.draft = draft.value; invalidateResolved("question"); updateCounter(); };
+  draft.oninput = () => { row.draft = draft.value; invalidateResolved("question"); updateCounter(); scheduleRecheck(row,"question",draft); };
   updateCounter();
+  label.dataset.correctionField = "question";
   label.append(draft, counter);
-  const questionHasTags = row.tags.some(tag => tag.field === "question" && tag.level !== "Manual review");
-  if (questionHasTags) compare.append(original, label);
-  else {
-    compare.classList.add("single-column");
-    const optional = make("details", "");
-    optional.className = "optional-suggestion";
-    optional.open = row.draft !== row.question;
-    optional.append(make("summary", "Add a correction"), label);
-    original.append(optional);
-    compare.append(original);
-  }
+  correctionEditors.set("question",label);
+  compare.append(original,label);
   const fieldPanels = {};
   const tagTargets = new Map();
   const highlightedSpans = [];
@@ -727,7 +1089,11 @@ function renderDetail() {
   }
   function emphasizeTag(tag) {
     for (const [other,target] of tagTargets) target.chip.classList.toggle("tag-selected",other === tag);
-    for (const span of highlightedSpans) span.element.classList.toggle("tag-selected",span.tags.includes(tag));
+    for (const span of highlightedSpans) {
+      const selected=span.tags.includes(tag);
+      span.element.classList.toggle("tag-selected",selected);
+      if(selected)colorTag(span.element,tag.id);
+    }
   }
   const textPanels = {};
   for (const field of ["question", "description", "guidance", "picture"]) {
@@ -738,6 +1104,7 @@ function renderDetail() {
     const chips = make("div", "");
     chips.className = "field-tags";
     const explanations = make("div", "");
+    explanations.className = "field-explanations";
     block.append(text, chips, explanations);
     fieldPanels[field] = {block, chips, explanations};
     textPanels[field] = text;
@@ -746,7 +1113,7 @@ function renderDetail() {
 
   for (const tag of row.tags) {
     const item = make("div", "");
-    item.className = "tag-explanation";
+    item.className = tag.level === "Manual review" ? "tag-explanation manual-issue" : "tag-explanation";
     colorTag(item,tag.id);
     item.hidden = true;
     const fieldPanel = fieldPanels[tag.field];
@@ -754,7 +1121,7 @@ function renderDetail() {
     chip.className = "tag-chip";
     colorTag(chip,tag.id);
     chip.dataset.tagType = tag.id;
-    chip.textContent = tag.label + ({Resolved:" · Fixed",Dismissed:" · No change needed","Needs edit":" · Review later"}[tag.decision] || "");
+    chip.textContent = tag.label + ({Resolved:" · Reviewed",Dismissed:" · Unchanged","Needs edit":" · Review later"}[tag.decision] || "");
     chip.setAttribute("aria-expanded", "false");
     chip.onclick = () => {
       row.reviewStage = "issues";
@@ -790,9 +1157,10 @@ function renderDetail() {
     };
     item.append(make("p", prompts[tag.id] || tag.label));
     const details = make("details", "");
-    details.append(make("summary", "Details"), make("p", tag.reason),
+    details.className = "issue-reason";
+    details.append(make("summary", "Why was this flagged?"), make("p", tag.reason),
       make("small", tag.id + " · " + tag.level));
-    item.append(details);
+    if(tag.level !== "Manual review") item.append(details);
     const decisionNote = make("label", "Comment");
     const noteInput = make("textarea", "");
     noteInput.rows = 1;
@@ -804,46 +1172,63 @@ function renderDetail() {
     comment.className = "tag-comment";
     comment.open = Boolean(tag.decisionNote);
     comment.append(make("summary", tag.decisionNote ? "Comment" : "Add comment"), decisionNote);
-    const decisionLabels = {Pending:"Awaiting review", "Needs edit":"Review later", Resolved:"Fixed", Dismissed:"No change needed"};
+    const decisionLabels = {Pending:"Awaiting review", "Needs edit":"Review later", Resolved:tag.level === "Manual review" ? "Checked" : "Correction saved", Dismissed:"Reviewed — unchanged"};
     const decisionStatus = make("p", decisionLabels[tag.decision]);
     decisionStatus.setAttribute("role", "status");
+    decisionStatus.hidden = tag.decision === "Pending";
     tagDecisionViews.set(tag, {chip, status:decisionStatus});
     const tagActions = make("div", "");
     tagActions.className = "actions";
-    for (const [value, caption] of [["Resolved","✓ Fixed"],["Dismissed","No change needed"],["Needs edit","Review later"],["Pending","Reopen issue"]]) {
-      const action = make("button", caption);
+    for (const [value, caption] of [["Continue","Continue"],["Needs edit","Review later"],["Pending","Reopen issue"]]) {
+      const action = make("button", value === "Continue" ? (sectionChanged(row,tag.field) ? "Accept changes" : "Continue") : caption);
       action.type = "button";
-      action.className = value === "Resolved" ? "decision-primary" : value === "Needs edit" || value === "Pending" ? "decision-text" : "decision-secondary";
+      if(value === "Continue") tagDecisionViews.get(tag).continueButton=action;
+      action.className = value === "Continue" ? "decision-primary" : "decision-text";
       action.hidden = tag.decision === "Resolved" || tag.decision === "Dismissed"
         ? value !== "Pending"
         : value === tag.decision || (value === "Pending" && tag.decision === "Pending");
       action.title = {
-        Resolved:"The issue has been addressed in the text.",
-        Dismissed:"The flagged wording is acceptable as written.",
+        Continue:"Continue with this content. Changes are recorded when present.",
         "Needs edit":"Leave this issue for another pass.",
         Pending:"Return this issue to review."
       }[value];
       action.onclick = () => {
+        const changed = sectionChanged(row,tag.field);
+        const decision = value === "Continue" ? (changed || tag.level === "Manual review" ? "Resolved" : "Dismissed") : value;
         const reviewer = byId("reviewer").value.trim();
-        if (value !== "Pending" && !reviewer) {
+        if (decision !== "Pending" && !reviewer) {
           decisionStatus.textContent = "Enter your reviewer name first.";
           (focusedIssue ? byId("focus-reviewer") : byId("reviewer")).focus();
           return;
         }
-        tag.decision = value;
-        row.finalCheck = {status:"Pending"};
-        tag.reviewer = value === "Pending" ? "" : reviewer;
-        tag.decisionTime = value === "Pending" ? "" : new Date().toISOString();
-        tag.reviewedText = value === "Pending" ? "" : tag.field === "picture" ? "Picture reviewed in source material" : tag.field === "question" ? row.draft : row[tag.field + "Draft"];
-        decisionStatus.textContent = decisionLabels[value];
-        for (const otherAction of tagActions.children) {
-          otherAction.hidden = value === "Resolved" || value === "Dismissed"
-            ? otherAction.dataset.decision !== "Pending"
-            : otherAction.dataset.decision === value ||
-              (otherAction.dataset.decision === "Pending" && value === "Pending");
+        const currentText = tag.field === "question" ? row.draft : row[tag.field+"Draft"];
+        tag.decision = decision;
+        if(decision !== "Pending")row.editingField=null;
+        if(value === "Continue") {
+          tag.acceptedChange = changed;
+          row.acceptedContent[tag.field] = currentSection(row,tag.field);
         }
-        chip.textContent = tag.label + (value === "Pending" ? "" : " · " + decisionLabels[value]);
-        if (value === "Resolved" || value === "Dismissed") {
+        row.finalCheck = {status:"Pending"};
+        tag.reviewer = decision === "Pending" ? "" : reviewer;
+        tag.decisionTime = decision === "Pending" ? "" : new Date().toISOString();
+        tag.reviewedText = decision === "Pending" ? "" : tag.field === "picture" ? "Picture reviewed in source material" : tag.field === "question" ? row.draft : row[tag.field + "Draft"];
+        if(decision === "Resolved" && tag.field !== "picture" && currentText !== row.analysisText[tag.field]) {
+          clearTimeout(automaticRechecks.get(row)?.get(tag.field));
+          recheckSection(row, tag.field, JSON.parse(reviewedRules));
+          renderQueue();
+          renderDetail();
+          message("Corrected section rechecked. Review the remaining issues.");
+          return;
+        }
+        decisionStatus.textContent = decisionLabels[decision];
+        for (const otherAction of tagActions.children) {
+          otherAction.hidden = decision === "Resolved" || decision === "Dismissed"
+            ? otherAction.dataset.decision !== "Pending"
+            : otherAction.dataset.decision === decision ||
+              (otherAction.dataset.decision === "Pending" && decision === "Pending");
+        }
+        chip.textContent = tag.label + (decision === "Pending" ? "" : " · " + decisionLabels[decision]);
+        if (decision === "Resolved" || decision === "Dismissed") {
           item.hidden = true;
           chip.setAttribute("aria-expanded", "false");
           chip.focus();
@@ -853,7 +1238,7 @@ function renderDetail() {
           row.tags.some(t => t.decision === "Pending") ? "Pending" : "Reviewed";
         renderQueue();
         renderFinalCheck();
-        if (value !== "Pending") {
+        if (decision !== "Pending") {
           row.issueIndex = orderedTags.indexOf(tag) + 1;
           row.reviewStage = row.issueIndex < orderedTags.length ? "issues" : "final";
         }
@@ -862,38 +1247,67 @@ function renderDetail() {
       action.dataset.decision = value;
       tagActions.append(action);
     }
-    item.append(tagActions, decisionStatus, comment);
+    if(tag.level === "Manual review") {
+      const options=make("details","");
+      options.className="manual-options";
+      options.append(make("summary","More options"));
+      if(tag.id==="MANUAL-PICTURE") {
+        options.append(make("p","Check the picture against these criteria:"),pictureRecommendationList());
+      } else options.append(make("p",tag.reason));
+      options.append(comment);
+      item.append(tagActions,decisionStatus,options);
+    } else item.append(tagActions, decisionStatus, comment);
   }
   const supportingSections = {};
   for (const [field, caption] of [["description","Description"],["guidance","What to look for"]]) {
     const section = make("section", "");
     section.append(make("h3", caption));
-    const hasTags = row.tags.some(tag => tag.field === field && tag.level !== "Manual review");
-    if (hasTags) {
-      const pair = make("div", "");
-      pair.className = "compare supporting-compare";
-      const editLabel = make("label", field === "guidance" ? "Corrected guidance" : "Corrected description");
-      editLabel.className = "suggestion-column";
-      const edit = make("textarea", "");
-      edit.value = row[field + "Draft"];
-      edit.oninput = () => { row[field + "Draft"] = edit.value; invalidateResolved(field); };
-      editLabel.append(edit);
-      pair.append(fieldPanels[field].block, editLabel);
-      section.append(pair);
-    } else {
-      section.append(fieldPanels[field].block);
-      const optional = make("details", "");
-      optional.className = "optional-suggestion";
-      optional.open = row[field+"Draft"] !== row[field];
-      const editLabel = make("label", field === "guidance" ? "Corrected guidance" : "Corrected description");
-      const edit = make("textarea", "");
-      edit.value = row[field+"Draft"];
-      edit.oninput = () => { row[field+"Draft"] = edit.value; invalidateResolved(field); };
-      editLabel.append(edit);
-      optional.append(make("summary", "Add a correction"), editLabel);
-      section.append(optional);
-    }
+    section.append(fieldPanels[field].block);
+    const editLabel = make("label", field === "guidance" ? "Corrected guidance" : "Corrected description");
+    editLabel.className = "suggestion-column";
+    editLabel.dataset.correctionField=field;
+    const edit = make("textarea", "");
+    edit.value = row[field+"Draft"];
+    edit.oninput = () => { row[field+"Draft"] = edit.value; invalidateResolved(field); scheduleRecheck(row,field,edit); };
+    editLabel.dataset.correctionField = field;
+    editLabel.append(edit);
+    correctionEditors.set(field,editLabel);
+    section.append(editLabel);
     supportingSections[field] = section;
+  }
+  for (const field of ["question","description","guidance"]) {
+    const source = textPanels[field];
+    source.tabIndex = 0;
+    source.dataset.editField = field;
+    source.title = "Double-click to edit · Enter to edit";
+    source.setAttribute("aria-label", (field === "guidance" ? "What to look for" : field) + ". Double-click or press Enter to edit.");
+    const openEditor = () => {
+      if(row.reviewStage!=="read")return;
+      row.editingField=field;
+      for(const [other,editor] of correctionEditors) {
+        const editing=other===field;
+        textPanels[other].hidden=editing;
+        editor.hidden=!editing;
+        if(editing) {
+          textPanels[other].after(editor);
+          editor.classList.add("inline-correction");
+          editor.querySelector("textarea").setAttribute("aria-label", "Edit " +
+            (field==="guidance"?"What to look for":field));
+        }
+      }
+      const section = field === "question" ? compare : supportingSections[field];
+      section.classList.remove("context-muted");
+      const editor=correctionEditors.get(field);
+      refreshSpellingEditors(editor);
+      const input=editor.querySelector("textarea");
+      input.style.height="auto";
+      input.style.height=Math.max(80,input.scrollHeight+4)+"px";
+      input.focus();
+    };
+    source.ondblclick = event => { event.preventDefault(); openEditor(); };
+    source.onkeydown = event => {
+      if(event.key === "Enter" && event.target === source) {event.preventDefault();openEditor();}
+    };
   }
   const noteLabel = make("label", "Comment");
   const note = make("textarea", "");
@@ -906,10 +1320,11 @@ function renderDetail() {
   reviewComment.open = Boolean(row.note);
   reviewComment.append(make("summary", "Add general comment"), noteLabel);
   for (const field of ["question", "description", "guidance"]) {
-    const source = row[field];
+    const source = row.reviewStage==="read" ? row.analysisText[field] : row[field];
     const ranges = [];
     for (const tag of row.tags.filter(tag => tag.field === field && tag.evidence !== "(empty)")) {
       if (Number.isInteger(tag.offset)) {
+        if(source.slice(tag.offset,tag.offset+tag.evidence.length)!==tag.evidence)continue;
         ranges.push({start:tag.offset,end:tag.offset+tag.evidence.length,tag});
       } else {
         for (const match of source.matchAll(pattern(tag.evidence, "giu"))) {
@@ -925,7 +1340,9 @@ function renderDetail() {
         textPanels[field].append(document.createTextNode(source.slice(start,end)));
         continue;
       }
-      const highlight=make("button",source.slice(start,end));
+      const highlight=make("span",source.slice(start,end));
+      highlight.setAttribute("role","button");
+      highlight.tabIndex=0;
       highlight.className="text-highlight";
       colorTag(highlight,covering[0].tag.id);
       highlightedSpans.push({element:highlight,tags:covering.map(range=>range.tag)});
@@ -945,46 +1362,111 @@ function renderDetail() {
         showGuidedStage();
         tagTargets.get(tag).item.scrollIntoView({block:"nearest"});
       };
+      highlight.onkeydown=event=>{
+        if(event.key==="Enter"||event.key===" "){event.preventDefault();highlight.onclick();}
+      };
       textPanels[field].append(highlight);
     }
     if (!source) textPanels[field].append(make("span","Missing from import"));
   }
   const pictureSection = make("section", "");
-  pictureSection.append(make("h3","Picture review"),
-    make("small","Review the picture in your source material. Pictures are not displayed in this version."),
-    fieldPanels.picture.block);
-  const reviewHint = make("small","Tags refer to imported text. Edited suggestions need your review.");
+  const pictureInput = make("input", "");
+  pictureInput.type = "file";
+  pictureInput.accept = "image/png,image/jpeg,image/webp,image/gif";
+  const pictureLabel = make("label","Choose a local picture");
+  pictureLabel.append(filePicker(pictureInput));
+  const picture = make("img","");
+  picture.className = "review-picture";
+  picture.alt = "Picture for this checklist item";
+  picture.hidden = !row.pictureUrl;
+  if (row.pictureUrl) picture.src = row.pictureUrl;
+  pictureInput.onchange = () => {
+    const file = pictureInput.files[0];
+    if (!file) return;
+    if (!["image/png","image/jpeg","image/webp","image/gif"].includes(file.type)) {
+      message("Choose a PNG, JPEG, WebP or GIF image."); return;
+    }
+    if(row.pictureUrl) URL.revokeObjectURL(row.pictureUrl);
+    row.pictureUrl = URL.createObjectURL(file);
+    row.pictureName = file.name;
+    picture.src = row.pictureUrl;
+    picture.hidden = false;
+    const tag = row.tags.find(tag=>tag.id==="MANUAL-PICTURE");
+    if(tag){tag.decision="Pending";const view=tagDecisionViews.get(tag);
+      if(view){view.chip.textContent=tag.label;view.status.textContent="Awaiting review";}}
+    row.finalCheck = {status:"Pending"};
+    renderDetail();
+  };
+  pictureSection.append(make("h3","Picture"), picture, fieldPanels.picture.block);
+  const pictureTag=row.tags.find(tag=>tag.field==="picture" && tag.level==="Manual review");
+  const pictureOptions=pictureTag ? tagTargets.get(pictureTag).item.querySelector(".manual-options") : null;
+  if(pictureOptions) {
+    pictureLabel.firstChild.textContent = "Replace picture";
+    pictureOptions.append(pictureLabel);
+  } else pictureLabel.hidden=true;
+  const contextGrid = make("div","");
+  contextGrid.className = "review-context-grid";
+  compare.classList.add("context-card");
+  supportingSections.description.classList.add("context-card");
+  supportingSections.guidance.classList.add("context-card");
+  pictureSection.classList.add("context-card");
+  contextGrid.append(pictureSection,compare,supportingSections.description,supportingSections.guidance);
+  const reviewHint = make("small","Tags refer to the latest checked text. Analysis updates automatically after a typing pause.");
   showGuidedStage = () => {
     const reading = row.reviewStage === "read";
     const final = row.reviewStage === "final";
     panel.classList.toggle("reading-canvas", !final);
     const tag = row.reviewStage === "issues" ? orderedTags[row.issueIndex] : null;
-    compare.hidden = final || (!reading && tag?.field !== "question");
-    supportingSections.description.hidden = reading || final || tag?.field !== "description";
-    supportingSections.guidance.hidden = reading || final || tag?.field !== "guidance";
-    pictureSection.hidden = reading || final || tag?.field !== "picture";
+    pictureLabel.hidden = tag?.field !== "picture";
+    contextGrid.hidden = false;
+    compare.hidden = false;
+    supportingSections.description.hidden = false;
+    supportingSections.guidance.hidden = false;
+    pictureSection.hidden = false;
+    for(const [field,card] of [["question",compare],["description",supportingSections.description],
+      ["guidance",supportingSections.guidance],["picture",pictureSection]]) {
+      card.classList.toggle("context-muted",Boolean(tag && tag.field!==field));
+      card.classList.toggle("context-active",Boolean(tag && tag.field===field));
+    }
     finalPanel.hidden = !final;
     reviewComment.hidden = !final;
     reviewHint.hidden = !final;
-    label.hidden = reading;
+    for (const [field,editor] of correctionEditors) {
+      const editing=reading && row.editingField===field;
+      const reviewing=!reading && !final;
+      const view=fieldPanels[field];
+      view.block.classList.toggle("review-versions",reviewing);
+      editor.classList.toggle("inline-correction",editing);
+      editor.hidden=!(editing || reviewing);
+      textPanels[field].hidden=editing;
+      textPanels[field].tabIndex=reading?0:-1;
+      textPanels[field].title=reading?"Double-click to edit · Enter to edit":"Original text";
+      textPanels[field].dataset.caption=reviewing?"Original":"";
+      if(editing)textPanels[field].after(editor);
+      else if(reviewing)view.block.insertBefore(editor,view.chips);
+    }
     compare.classList.toggle("single-column",reading);
     for (const [other,target] of tagTargets) {
-      target.chip.hidden = other !== tag;
+      target.chip.hidden = other !== tag || other.level === "Manual review";
       target.item.hidden = other !== tag;
       target.chip.setAttribute("aria-expanded",String(other === tag));
     }
     for (const span of highlightedSpans) {
       span.element.classList.toggle("inactive-highlight", !tag || !span.tags.includes(tag));
     }
+    for (const [field,view] of Object.entries(fieldPanels)) {
+      view.block.classList.toggle("active-issue-field", Boolean(tag && tag.field === field));
+      textPanels[field].classList.toggle("length-single-tint",Boolean(tag && tag.id==="FW-SHORT" && tag.field===field));
+    }
     emphasizeTag(tag);
     stageBar.replaceChildren();
     if (reading) {
-      stageBar.append(make("p","Read the question first."));
       const start = make("button","Start review");
       start.onclick = () => {
         row.reviewStage = orderedTags.length ? "issues" : "final";
         row.issueIndex = 0;
-        showGuidedStage();
+        row.editingField=null;
+        renderDetail();
         panel.scrollIntoView({block:"start",behavior:"smooth"});
       };
       stageBar.append(start);
@@ -998,7 +1480,7 @@ function renderDetail() {
         if (final && orderedTags.length) {row.reviewStage="issues";row.issueIndex=orderedTags.length-1;}
         else if (row.issueIndex > 0) row.issueIndex--;
         else row.reviewStage="read";
-        showGuidedStage();
+        renderDetail();
       };
       stageBar.append(progress,back);
       if (!final && tag && ["Resolved","Dismissed","Needs edit"].includes(tag.decision)) {
@@ -1020,40 +1502,91 @@ function renderDetail() {
       }
     }
     renderFinalCheck();
+    requestAnimationFrame(()=>refreshSpellingEditors(panel));
   };
   renderFinalCheck();
-  panel.replaceChildren(make("h2", [row.role, row.id, row.cell].filter(Boolean).join(" · ")), stageBar, compare,
-    supportingSections.description, supportingSections.guidance,
-    pictureSection, reviewHint,
+  panel.replaceChildren(context, make("h2", [row.id, row.cell].filter(Boolean).join(" · ")), stageBar, contextGrid, reviewHint,
     reviewComment, finalPanel);
   showGuidedStage();
 }
 
+function reportDiff(original, revised) {
+  const tokenize = text => String(text ?? "").match(/\s+|[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) || [];
+  const a=tokenize(original), b=tokenize(revised);
+  if(a.length*b.length>2000000) return {
+    original:a.map(text=>({text,changed:original!==revised})),
+    revised:b.map(text=>({text,changed:original!==revised}))
+  };
+  const matrix=Array.from({length:a.length+1},()=>new Uint32Array(b.length+1));
+  for(let i=a.length-1;i>=0;i--) for(let j=b.length-1;j>=0;j--)
+    matrix[i][j]=a[i]===b[j]?matrix[i+1][j+1]+1:Math.max(matrix[i+1][j],matrix[i][j+1]);
+  const left=[],right=[];let i=0,j=0;
+  while(i<a.length||j<b.length) {
+    if(i<a.length&&j<b.length&&a[i]===b[j]){left.push({text:a[i++],changed:false});right.push({text:b[j++],changed:false});}
+    else if(i<a.length&&(j===b.length||matrix[i+1][j]>=matrix[i][j+1]))left.push({text:a[i++],changed:true});
+    else right.push({text:b[j++],changed:true});
+  }
+  return {original:left,revised:right};
+}
+function reportDiffHtml(parts, kind, encode) {
+  return parts.map(part=>part.changed && part.text.trim() ?
+    "<"+kind+">"+encode(part.text)+"</"+kind+">":encode(part.text)).join("");
+}
+function reportCell(value,column,index,encode) {
+  const row=rows[index-1];
+  const pairs={5:["question","original"],6:["description","original"],7:["guidance","original"],
+    8:["question","suggestion"],9:["question","revised"],12:["question","revised"],
+    18:["description","revised"],19:["guidance","revised"],20:["description","revised"],21:["guidance","revised"]};
+  const pair=pairs[column];
+  let content="<t xml:space='preserve'>"+encode(value)+"</t>";
+  if(row&&pair){
+    const [field,side]=pair;
+    const revised=side==="suggestion"?row.suggested:field==="question"?row.draft:row[field+"Draft"];
+    const diff=reportDiff(row[field],revised);
+    const parts=side==="original"?diff.original:diff.revised;
+    content=parts.map(part=>"<r>"+(part.changed?"<rPr><color rgb='"+(side==="original"?"FFAA3333":"FF146344")+"'/>"+(side==="original"?"<strike/>":"<b/><u/>")+"</rPr>":"")+
+      "<t xml:space='preserve'>"+encode(part.text)+"</t></r>").join("");
+    if(!content)content="<t></t>";
+  }
+  return '<c r="'+String.fromCharCode(65+column)+(index+1)+'" t="inlineStr"><is>'+content+'</is></c>';
+}
+
 byId("export").onclick = async () => {
   try {
-    const data = [["Source workbook","Sheet","Question cell","ID","Role","Original question","Description","What to look for","Suggestion","Draft","Review cues","Review status","Question draft","Reviewer","Decision time (UTC)","Review note","Guidelines JSON","Structured tags JSON","Description draft","Guidance draft","Description for review","Guidance for review","Final consistency check"],
-      ...rows.map(row => [row.source,row.sheet,row.cell,row.id,row.role,row.question,row.description,row.guidance,row.suggested,row.draft,row.tags.map(tag => tag.id + " · " + tag.label + " · " + tag.field + ": " + tag.evidence + " — " + tag.reason + " · Decision: " + tag.decision + (tag.connection ? " · " + tag.connection.status + (tag.connection.referent ? " → " + tag.connection.referent : "") : "")).join("\n"),row.status,row.draft,"","",row.note,reviewedRules,JSON.stringify(row.tags),row.descriptionDraft,row.guidanceDraft,row.descriptionDraft,row.guidanceDraft,JSON.stringify(row.finalCheck)])];
+    const data = [["Source workbook","Sheet","Question cell","ID","Role","Original question","Description","What to look for","Suggestion","Draft","Review cues","Review status","Question draft","Reviewer","Decision time (UTC)","Review note","Guidelines JSON","Structured tags JSON","Description draft","Guidance draft","Description for review","Guidance for review","Final consistency check","Critical risk","Critical control","Final picture check"],
+      ...rows.map(row => [row.source,row.sheet,row.cell,row.id,row.role,row.question,row.description,row.guidance,row.suggested,row.draft,reviewTags(row).map(tag => tag.id + " · " + tag.label + " · " + tag.field + ": " + tag.evidence + " — " + tag.reason + " · Decision: " + tag.decision + (tag.connection ? " · " + tag.connection.status + (tag.connection.referent ? " → " + tag.connection.referent : "") : "")).join("\n"),row.status,row.draft,"","",row.note,reviewedRules,JSON.stringify(reviewTags(row)),row.descriptionDraft,row.guidanceDraft,row.descriptionDraft,row.guidanceDraft,JSON.stringify(row.finalCheck),row.risk,row.control,JSON.stringify(row.finalPictureCheck)])];
     const encode = value => String(value ?? "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,"").replace(/[&<>]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;"})[char]);
     if (byId("report-format").value === "html") {
       const fieldNames = {question:"Question",description:"Description",guidance:"What to look for"};
       const sections = rows.map(row => {
         const content = Object.entries(fieldNames).map(([field,caption]) => {
           const draft = field === "question" ? row.draft : row[field+"Draft"];
-          return "<h3>" + caption + "</h3><div class=pair><div><b>Original</b><p>" + encode(row[field]) +
-            "</p></div><div><b>Draft</b><p>" + encode(draft) + "</p></div></div>";
+          const diff=reportDiff(row[field],draft);
+          return "<h3>" + caption + "</h3><div class=pair><div><b>Original</b><p>" + reportDiffHtml(diff.original,"del",encode) +
+            "</p></div><div><b>Revised</b><p>" + reportDiffHtml(diff.revised,"ins",encode) + "</p></div></div>";
         }).join("");
-        const tags = row.tags.map(tag => "<li><strong>" + encode(tag.label) + " — " + encode(tag.decision) +
-          "</strong><p>" + encode(fieldNames[tag.field] || "Picture") + " · “" + encode(tag.evidence) + "”</p><p>" +
-          encode(tag.reason) + "</p><p>" + encode(tag.decisionNote) + "</p><small>" +
-          encode(tag.reviewer || "") + " · " + encode(tag.decisionTime || "") +
-          "</small>" + (tag.reviewedText ? "<details><summary>Text at decision</summary><p>" +
-          encode(tag.reviewedText) + "</p></details>" : "") + "</li>").join("");
+        const renderReason = tag => "<details class=reason><summary>" + encode(tag.label) + " · " +
+          encode(fieldNames[tag.field] || "Picture") + "</summary><p>“" + encode(tag.evidence) +
+          "”</p><p>" + encode(tag.reason) + "</p>" + (tag.decisionNote ? "<p>" + encode(tag.decisionNote) + "</p>" : "") +
+          "<small>" + encode(tag.reviewer || "") + " · " + encode(tag.decisionTime || "") + "</small>" +
+          (tag.reviewedText ? "<details><summary>Text at decision</summary><p>" + encode(tag.reviewedText) + "</p></details>" : "") + "</details>";
+        const corrected = reviewTags(row).filter(tag => tag.decision === "Resolved" && tag.level !== "Manual review" &&
+          typeof row[tag.field] === "string" && tag.reviewedText !== undefined && tag.reviewedText !== row[tag.field] &&
+          (tag.field === "question" ? row.draft : row[tag.field+"Draft"]) !== row[tag.field]);
+        const dismissed = reviewTags(row).filter(tag => tag.decision === "Dismissed");
+        const other = reviewTags(row).filter(tag => !corrected.includes(tag) && !dismissed.includes(tag));
+        const correctionReasons = corrected.length ? "<h3>Reasons for corrections</h3>" + corrected.map(renderReason).join("") : "";
+        const archived = (dismissed.length ? "<details class=justifications><summary>Dismissed findings (" + dismissed.length +
+          ")</summary>" + dismissed.map(renderReason).join("") + "</details>" : "") +
+          (other.length ? "<details class=justifications><summary>Other review checks (" + other.length +
+          ")</summary>" + other.map(renderReason).join("") + "</details>" : "");
         return "<article><h2>" + encode([row.role,row.id].filter(Boolean).join(" · ")) +
-          "</h2><p>" + encode(row.source) + " · " + encode(row.sheet) + " · " + encode(row.cell) +
-          "</p>" + content + "<h3>Tag decisions</h3>" + (tags ? "<ul>" + tags + "</ul>" : "<p>No tags found.</p>") +
-          "<h3>Review note</h3><p>" + encode(row.note) + "</p><h3>Final consistency check</h3><p>" + encode(row.finalCheck.status) + "</p><small>" + encode(row.finalCheck.reviewer || "") + " · " + encode(row.finalCheck.time || "") + "</small></article>";
+          "</h2><p><b>Critical risk</b> " + encode(row.risk || "Not specified") +
+          " · <b>Critical control</b> " + encode(row.control || "Not specified") + "</p><p>" + encode(row.source) + " · " + encode(row.sheet) + " · " + encode(row.cell) +
+          "</p>" + content + correctionReasons + archived +
+          (row.note ? "<details><summary>Review note</summary><p>" + encode(row.note) + "</p></details>" : "") + "<h3>Final consistency check</h3><p>" + encode(row.finalCheck.status) + "</p><small>" + encode(row.finalCheck.reviewer || "") + " · " + encode(row.finalCheck.time || "") + "</small><h3>Final picture check</h3><p>" + encode(pictureRecheckRequired(row) && row.finalPictureCheck?.key !== pictureReviewKey(row) ? "Pending" : row.finalPictureCheck?.status || "Not required") + "</p></article>";
       }).join("");
-      const report = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Procedure QA report</title><style>body{max-width:1050px;margin:32px auto;padding:0 20px;font:16px/1.5 system-ui;color:#182838}article{border-top:2px solid #cbd8d3;margin-top:30px;padding-top:16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}.pair>div,li{padding:12px;background:#f3f6f5;border-radius:6px}li{margin-bottom:10px}p{white-space:pre-wrap;overflow-wrap:anywhere}small{color:#51677a}pre{white-space:pre-wrap}@media(max-width:600px){.pair{grid-template-columns:1fr}}@media print{article{break-inside:auto}}</style><h1>Procedure QA report</h1><p>Generated ' +
+      const report = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Procedure QA report</title><style>body{max-width:1050px;margin:32px auto;padding:0 20px;font:16px/1.5 system-ui;color:#182838}article{border-top:2px solid #cbd8d3;margin-top:30px;padding-top:16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}.pair>div,li{padding:12px;background:#f3f6f5;border-radius:6px}li{margin-bottom:10px}p{white-space:pre-wrap;overflow-wrap:anywhere}small{color:#51677a}pre{white-space:pre-wrap}ins{background:#d9f2df;color:#155d32;text-decoration:none;border-bottom:2px solid #388652}del{background:#ffe3e3;color:#9b3030}summary{cursor:pointer;font-weight:600}.justifications{margin:18px 0}@media(max-width:600px){.pair{grid-template-columns:1fr}}@media print{article{break-inside:auto}}</style><h1>Procedure QA report</h1><p><ins>Added or revised text</ins> · <del>Removed text</del></p><p>Generated ' +
         encode(new Date().toISOString()) + ' · ' + rows.length + ' items</p>' + sections +
         '<details><summary>Guideline settings</summary><pre>' + encode(reviewedRules) + '</pre></details></html>';
       downloadReport(new Blob([report],{type:"text/html;charset=utf-8"}),"procedure-qa-report.html");
@@ -1068,7 +1601,7 @@ byId("export").onclick = async () => {
     zip.file("xl/workbook.xml", '<workbook xmlns="' + ns + 'spreadsheetml/2006/main" xmlns:r="' + ns + 'officeDocument/2006/relationships"><sheets><sheet name="Question QA" sheetId="1" r:id="rId1"/></sheets></workbook>');
     zip.file("xl/worksheets/sheet1.xml", '<worksheet xmlns="' + ns + 'spreadsheetml/2006/main"><sheetData>' +
       data.map((row,index) => '<row r="' + (index+1) + '">' + row.map((value,column) =>
-        '<c r="' + String.fromCharCode(65+column) + (index+1) + '" t="inlineStr"><is><t xml:space="preserve">' + encode(value) + '</t></is></c>').join("") + '</row>').join("") + '</sheetData></worksheet>');
+        reportCell(value,column,index,encode)).join("") + '</row>').join("") + '</sheetData></worksheet>');
     downloadReport(await zip.generateAsync({type:"blob",mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),"procedure-qa-report.xlsx");
   } catch (error) { message(error.message); }
 };
@@ -1082,3 +1615,97 @@ function downloadReport(blob, filename) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+
+let composition = {step:0,role:"Worker",risk:"",control:"",question:"",description:"",guidance:"",pictureUrl:""};
+const writingSteps = [
+  {field:"picture",title:"Picture",guide:"Choose an image that clearly shows the control to check. It should agree with the text and show the relevant detail. You can leave this empty if a picture is not needed."},
+  {field:"question",title:"Question",guide:"Ask one short, direct question about a control. Make the expected Yes or No answer clear. Keep the essential condition here; put explanation in the description and evidence in the guidance."},
+  {field:"description",title:"Description",guide:"Explain the control and when it applies. Include essential conditions, responsibilities, and an approved reference where needed. Give enough information for the least experienced qualified reader."},
+  {field:"guidance",title:"What to look for",guide:"Give observable checks: what to see, measure, or confirm in a record. Explain what acceptable looks like. Context can be longer here. Keep required actions visible and consistent with the picture and description."},
+  {field:"preview",title:"Read your draft",guide:"Read all parts together before starting QA. Check that the picture, question, description, and evidence describe the same control."}
+];
+byId("new-question").onclick = () => {
+  exitIssueFocus();
+  byId("composer").hidden=false;
+  byId("review").hidden=true;
+  byId("preview").hidden=true;
+  renderComposer();
+  byId("composer").scrollIntoView({block:"start",behavior:"smooth"});
+};
+function renderComposer() {
+  disposeSpellingEditors(byId("composer"));
+  closeSpellingMenu();
+  const panel=byId("composer"), step=writingSteps[composition.step];
+  const heading=make("h2",step.title);
+  const progress=make("small","Write · "+(composition.step+1)+" of "+writingSteps.length);
+  const guide=make("p",step.guide);guide.className="writing-guide";
+  const content=make("div","");
+  if(composition.step===0) {
+    const upload=make("label","Optional local picture");
+    const file=make("input","");file.type="file";file.accept="image/png,image/jpeg,image/webp,image/gif";
+    const image=make("img","");image.className="review-picture";image.alt="Draft checklist picture";
+    image.hidden=!composition.pictureUrl;if(composition.pictureUrl)image.src=composition.pictureUrl;
+    file.onchange=()=>{
+      const selected=file.files[0];if(!selected)return;
+      if(!["image/png","image/jpeg","image/webp","image/gif"].includes(selected.type)){message("Choose a PNG, JPEG, WebP or GIF.");return;}
+      if(composition.pictureUrl)URL.revokeObjectURL(composition.pictureUrl);
+      composition.pictureUrl=URL.createObjectURL(selected);composition.pictureName=selected.name;
+      image.src=composition.pictureUrl;image.hidden=false;
+    };
+    upload.append(filePicker(file));content.append(image,pictureRecommendationDetails(),upload);
+  } else if(step.field==="preview") {
+    if(composition.pictureUrl){const image=make("img","");image.src=composition.pictureUrl;image.className="review-picture";image.alt="Draft checklist picture";content.append(image);}
+    for(const [field,caption] of [["question","Question"],["description","Description"],["guidance","What to look for"]]) {
+      const text=make("p",composition[field] || "Not provided");text.style.whiteSpace="pre-wrap";
+      content.append(make("h3",caption),text);
+    }
+  } else {
+    const label=make("label",step.title),input=make("textarea","");
+    input.rows=step.field==="question"?3:6;input.value=composition[step.field];
+    const count=make("small","");
+    const updateCount=()=>{
+      if(step.field==="question") {
+        const rules=rows.length?JSON.parse(reviewedRules):settings();
+        const result=lengthReview(input.value,rules);
+        count.textContent=result.count+" words · "+result.label;
+      }
+    };
+    input.oninput=()=>{composition[step.field]=input.value;updateCount();};
+    label.append(input);content.append(label,count);updateCount();
+  }
+  const actions=make("div","");actions.className="actions";
+  const back=make("button","Back");back.className="secondary";back.hidden=composition.step===0;
+  back.onclick=()=>{composition.step--;renderComposer();};
+  const next=make("button",composition.step===4?"Start QA":"Continue");
+  const validation=make("p","");validation.setAttribute("role","status");
+  next.onclick=()=>{
+    if(composition.step===1&&!composition.question.trim()){validation.textContent="Write a question before continuing.";return;}
+    if(composition.step<4){composition.step++;renderComposer();return;}
+    try {
+      const rules=rows.length?JSON.parse(reviewedRules):settings();
+      const record={id:"NEW-"+crypto.randomUUID().slice(0,8),role:composition.role,risk:composition.risk.trim(),control:composition.control.trim(),
+        question:composition.question.trim(),description:composition.description.trim(),guidance:composition.guidance.trim(),
+        pictureUrl:composition.pictureUrl,pictureName:composition.pictureName||"",source:"Written locally",sheet:"New questions",cell:""};
+      const item=analyze(record,rules);
+      rows.push(item);active=item;reviewedRules=JSON.stringify(rules);
+      byId("composer").hidden=true;byId("review").hidden=false;
+      byId("guideline-settings").hidden=false;byId("export").disabled=false;
+      byId("filter").value="All";byId("search").value="";
+      composition={step:0,role:"Worker",risk:"",control:"",question:"",description:"",guidance:"",pictureUrl:""};
+      renderQueue();renderDetail();
+      message("New item added. Read it, then start the QA review.");
+    }catch(error){validation.textContent=error.message;}
+  };
+  const close=make("button","Close draft");close.className="decision-text";
+  close.onclick=()=>{panel.hidden=true;byId("review").hidden=!rows.length;};
+  actions.append(back,next,close);
+  panel.replaceChildren(contextBar(composition),progress,heading,guide,content,validation,actions);
+  requestAnimationFrame(()=>refreshSpellingEditors(panel));
+}
+
+
+const workbookFileInput=byId("file");
+const workbookFileLabel=workbookFileInput.parentElement;
+workbookFileLabel.removeChild(workbookFileInput);
+workbookFileLabel.append(filePicker(workbookFileInput));
